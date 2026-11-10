@@ -1,0 +1,12 @@
+{
+  "rewrites": [
+    {
+      "source": "/",
+      "destination": "/hubble sapce simulation/index.html"
+    },
+    {
+      "source": "/:path*",
+      "destination": "/hubble sapce simulation/:path*"
+    }
+  ]
+}
