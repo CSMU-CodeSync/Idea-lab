@@ -1,646 +1,394 @@
 /**
  * app.js
- * Lead Frontend Orchestration Layer connecting HTML5 Canvas, Telemetry DOM,
- * RocketSimulationEngine, Chart Overlay Views, and Web Audio API Synthesizer.
+ * STS-31 Hubble Space Telescope Launch-to-LEO Orchestration Layer.
+ * Auto-starts from T-00:00:10 countdown and renders Figma 463:863 telemetry,
+ * Launch Complex 39B Tower, multi-stage Space Shuttle Discovery stack,
+ * and Hubble Space Telescope deployment at 613.5 km Low Earth Orbit.
  */
-
-class TelemetryAudioSynthesizer {
-  constructor() {
-    this.ctx = null;
-    this.rumbleOsc = null;
-    this.rumbleSubOsc = null;
-    this.rumbleGain = null;
-    this.isRumbling = false;
-  }
-
-  init() {
-    if (!this.ctx) {
-      const AudioCtx = window.AudioContext || window.webkitAudioContext;
-      if (AudioCtx) this.ctx = new AudioCtx();
-    }
-    if (this.ctx && this.ctx.state === 'suspended') {
-      this.ctx.resume();
-    }
-  }
-
-  /**
-   * 1. Crisp ignition sound sequence on launch trigger
-   */
-  playIgnition() {
-    this.init();
-    if (!this.ctx) return;
-
-    const now = this.ctx.currentTime;
-    const osc = this.ctx.createOscillator();
-    const gain = this.ctx.createGain();
-
-    osc.type = 'triangle';
-    osc.frequency.setValueAtTime(220, now);
-    osc.frequency.exponentialRampToValueAtTime(880, now + 0.09);
-    osc.frequency.exponentialRampToValueAtTime(140, now + 0.28);
-
-    gain.gain.setValueAtTime(0.001, now);
-    gain.gain.exponentialRampToValueAtTime(0.32, now + 0.03);
-    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.3);
-
-    osc.connect(gain);
-    gain.connect(this.ctx.destination);
-
-    osc.start(now);
-    osc.stop(now + 0.31);
-  }
-
-  /**
-   * 2. Continuous low-frequency thrust rumble modulated by velocity
-   */
-  updateThrustRumble(active, velocityMag = 0) {
-    if (!this.ctx) return;
-
-    if (!active) {
-      this.stopThrustRumble();
-      return;
-    }
-
-    const now = this.ctx.currentTime;
-    if (!this.isRumbling) {
-      this.rumbleOsc = this.ctx.createOscillator();
-      this.rumbleSubOsc = this.ctx.createOscillator();
-      const filter = this.ctx.createBiquadFilter();
-      this.rumbleGain = this.ctx.createGain();
-
-      this.rumbleOsc.type = 'sawtooth';
-      this.rumbleSubOsc.type = 'triangle';
-
-      filter.type = 'lowpass';
-      filter.frequency.setValueAtTime(190, now);
-
-      this.rumbleGain.gain.setValueAtTime(0.001, now);
-      this.rumbleGain.gain.exponentialRampToValueAtTime(0.18, now + 0.12);
-
-      this.rumbleOsc.connect(filter);
-      this.rumbleSubOsc.connect(filter);
-      filter.connect(this.rumbleGain);
-      this.rumbleGain.connect(this.ctx.destination);
-
-      this.rumbleOsc.start(now);
-      this.rumbleSubOsc.start(now);
-      this.isRumbling = true;
-    }
-
-    // Modulate pitch dynamically proportional to velocity changes
-    const baseFreq = 48 + Math.min(95, velocityMag * 0.28);
-    this.rumbleOsc.frequency.setTargetAtTime(baseFreq, now, 0.04);
-    this.rumbleSubOsc.frequency.setTargetAtTime(baseFreq * 0.5, now, 0.04);
-  }
-
-  stopThrustRumble() {
-    if (!this.isRumbling || !this.ctx) return;
-    const now = this.ctx.currentTime;
-    try {
-      this.rumbleGain.gain.setTargetAtTime(0.0001, now, 0.05);
-      this.rumbleOsc.stop(now + 0.18);
-      this.rumbleSubOsc.stop(now + 0.18);
-    } catch (_) {
-      // Ignore already-stopped oscillator state
-    }
-    this.rumbleOsc = null;
-    this.rumbleSubOsc = null;
-    this.rumbleGain = null;
-    this.isRumbling = false;
-  }
-
-  /**
-   * 3. Short impact alert frequency burst when returning to altitude 0
-   */
-  playImpactAlert() {
-    this.stopThrustRumble();
-    this.init();
-    if (!this.ctx) return;
-
-    const now = this.ctx.currentTime;
-    const osc = this.ctx.createOscillator();
-    const gain = this.ctx.createGain();
-
-    osc.type = 'square';
-    osc.frequency.setValueAtTime(320, now);
-    osc.frequency.exponentialRampToValueAtTime(58, now + 0.24);
-
-    gain.gain.setValueAtTime(0.28, now);
-    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.26);
-
-    osc.connect(gain);
-    gain.connect(this.ctx.destination);
-
-    osc.start(now);
-    osc.stop(now + 0.27);
-  }
-}
 
 (() => {
   const canvas = document.getElementById('simulation-canvas');
   if (!canvas) return;
   const ctx = canvas.getContext('2d');
 
-  // DOM References
-  const playBtn = document.getElementById('play-btn');
-  const controlPanel = document.getElementById('control-panel');
-  const chartPanel = document.getElementById('chart-panel');
-  const openLeftDrawer = document.getElementById('open-left-drawer');
-  const openRightDrawer = document.getElementById('open-right-drawer');
-  const chartTabs = Array.from(document.querySelectorAll('.chart-tab'));
-
-  const elAltitude = document.getElementById('val-altitude');
-  const elDistance = document.getElementById('val-distance');
-  const elVelocity = document.getElementById('val-velocity');
-  const elAcceleration = document.getElementById('val-acceleration');
-  const elGForce = document.getElementById('val-gforce');
-  const elMass = document.getElementById('val-mass');
+  // DOM Telemetry Elements (Figma 463:863)
   const elThrust = document.getElementById('val-thrust');
+  const elVelocity = document.getElementById('val-velocity');
+  const elPressure = document.getElementById('val-pressure');
+  const elClock = document.getElementById('val-clock');
+  const elStart = document.getElementById('val-start');
+  const elNextStage = document.getElementById('val-next-stage');
+  const elDuration = document.getElementById('val-duration');
+  const elAltitude = document.getElementById('val-altitude');
+  const elDownrange = document.getElementById('val-downrange');
+  const elTemperature = document.getElementById('val-temperature');
   const elFuel = document.getElementById('val-fuel');
-  const elFuelBar = document.getElementById('fuel-bar');
-  const inputTargetAltitude = document.getElementById('input-target-altitude');
 
-  // Core instances & orchestration state
   const engine = new RocketSimulationEngine();
-  const audio = new TelemetryAudioSynthesizer();
-
-  const VIEW_MODES = ['trajectory', 'velocity', 'gforce'];
-  const SKY_SHADES = ['#CAF0F8', '#0077B6', '#023E8A', '#03045E'];
-  let activeViewMode = 'trajectory';
-  let flightHistory = [];
   let currentState = engine.getTelemetryPayload();
-  let currentAngleRad = Math.PI / 2; // 90 deg upright on pad
-  let cameraZoom = 1.0;
-  let animId = null;
-  let isRunning = false;
+  let lastTimestamp = 0;
 
-  // Optional Figma image assets with clean vector fallback
-  const assetPaths = {
-    nose: 'Resorces/Rectangle 112.png',
-    nozzle: 'Resorces/image 9.png',
-    flame: 'Resorces/Ellipse 41.png'
+  // Starfield for high-altitude mesosphere & 613.5 km Low Earth Orbit
+  const stars = Array.from({ length: 140 }, () => ({
+    xRatio: Math.random(),
+    yRatio: Math.random() * 0.85,
+    radius: 0.6 + Math.random() * 1.4,
+    alpha: 0.35 + Math.random() * 0.65
+  }));
+
+  // Load Updated Resorces Assets
+  const assetSources = {
+    tower: 'Resorces/image 16.png',
+    leftSRB: 'Resorces/Group 55.png',
+    rightSRB: 'Resorces/Group 72.png',
+    externalTank: 'Resorces/Group 71.png',
+    orbiter: 'Resorces/Group 59.png'
   };
+
   const images = {};
-  Object.keys(assetPaths).forEach((key) => {
+  Object.keys(assetSources).forEach((key) => {
     const img = new Image();
-    img.src = assetPaths[key];
-    img.onload = () => renderFrame();
+    img.src = assetSources[key];
     images[key] = img;
   });
 
-  /**
-   * Computes camera zoom, ground Y boundary, and world-to-screen coordinate mapping.
-   * As the rocket gains altitude, cameraZoom decreases smoothly so the launchpad,
-   * landing site, and rocket zoom out proportionally.
-   */
-  function getViewportMetrics() {
-    const alt = Math.max(0, currentState.position_y);
-    const targetZoom = Math.max(0.18, 1 / (1 + alt / 260));
-    cameraZoom += (targetZoom - cameraZoom) * 0.15;
-
-    document.documentElement.style.setProperty('--camera-zoom', cameraZoom.toFixed(4));
-
-    const baseGroundHeight = Math.max(85, canvas.height * 0.105);
-    const groundHeight = baseGroundHeight * cameraZoom;
-    const groundY = canvas.height - groundHeight;
-    const launchX = canvas.width * 0.51;
-
-    // World meters-to-pixels scales smoothly with cameraZoom and user's target altitude
-    const targetAlt = Math.max(100, currentState.target_altitude || 500);
-    let maxSpanY = Math.max(220, alt * 1.35, targetAlt * 1.18);
-    let maxSpanX = Math.max(220, Math.abs(currentState.position_x) * 1.35);
-    for (let i = 0; i < flightHistory.length; i++) {
-      if (flightHistory[i].position_y * 1.18 > maxSpanY) maxSpanY = flightHistory[i].position_y * 1.18;
-    }
-
-    const usableHeight = Math.max(180, groundY - 210);
-    const metersToPixels = usableHeight / maxSpanY;
-
-    return {
-      groundY,
-      launchX,
-      cameraZoom,
-      metersToPixels,
-      toScreenX: (xMeters) => launchX + xMeters * metersToPixels,
-      toScreenY: (yMeters) => groundY - yMeters * metersToPixels
-    };
+  function ready(img) {
+    return img && img.complete && img.naturalWidth > 0;
   }
 
   /**
-   * Renders atmospheric color shade progression (#CAF0F8 -> #0077B6 -> #023E8A -> #03045E)
-   * shifting dynamically as the rocket climbs higher.
+   * Updates all Figma 463:863 HUD DOM readouts & CSS variables (no inline styles)
    */
-  function drawAtmosphereShades(metrics) {
-    const alt = Math.max(0, currentState.position_y);
-    // Normalized altitude progression (0 at pad -> 1 at high altitude)
-    const progress = Math.min(1, alt / 2500);
+  function syncTelemetryDOM(state) {
+    if (elClock) elClock.textContent = state.clock_formatted;
+    if (elStart) elStart.textContent = state.start_label;
+    if (elNextStage) elNextStage.textContent = state.next_stage_label;
+    if (elDuration) elDuration.textContent = state.duration_label;
 
-    const grad = ctx.createLinearGradient(0, canvas.height, 0, 0);
-    // Shift stops downward as altitude increases so higher shades dominate as rocket climbs
-    const stop1 = Math.max(0.0, 0.28 - progress * 0.22);
-    const stop2 = Math.max(0.15, 0.58 - progress * 0.28);
-    const stop3 = Math.max(0.38, 0.85 - progress * 0.30);
+    if (elThrust) elThrust.textContent = state.thrust_display;
+    if (elVelocity) elVelocity.textContent = state.velocity_kms.toFixed(2);
+    if (elPressure) elPressure.textContent = state.pressure_kpa.toFixed(1);
+    if (elAltitude) elAltitude.textContent = state.altitude_km.toFixed(1);
+    if (elDownrange) elDownrange.textContent = state.downrange_km.toFixed(0);
+    if (elTemperature) elTemperature.textContent = `${state.temperature_c}`;
+    if (elFuel) elFuel.textContent = `${state.fuel_percent} %`;
 
-    grad.addColorStop(0, SKY_SHADES[0]);     // #CAF0F8 (Low altitude / Troposphere)
-    grad.addColorStop(stop1, SKY_SHADES[0]); // #CAF0F8
-    grad.addColorStop(stop2, SKY_SHADES[1]); // #0077B6 (Mid altitude)
-    grad.addColorStop(stop3, SKY_SHADES[2]); // #023E8A (High altitude / Stratosphere)
-    grad.addColorStop(1, SKY_SHADES[3]);     // #03045E (Upper atmosphere / Deep space shade)
+    // Circular fuel ring arc (stroke-dasharray: 475 528)
+    const maxArc = 475;
+    const dashOffset = maxArc * (1 - state.fuel_percent / 100);
+    document.documentElement.style.setProperty('--fuel-dashoffset', dashOffset.toFixed(2));
+
+    // Zoom out ground & launchpad as Shuttle climbs from Pad 39B
+    const padZoom = state.altitude_km <= 0
+      ? 1.0
+      : Math.max(0.0, 1 / (1 + state.altitude_km * 1.8) - state.altitude_km * 0.015);
+    document.documentElement.style.setProperty('--camera-zoom', Math.max(0, padZoom).toFixed(4));
+  }
+
+  /**
+   * Renders atmospheric color shades (#CAF0F8 -> #0077B6 -> #023E8A -> #03045E -> LEO Space)
+   * and orbital horizon / starfield as altitude progresses from 0 km to 613.5 km.
+   */
+  function drawSkyAndAtmosphere(state) {
+    const w = canvas.width;
+    const h = canvas.height;
+    const alt = state.altitude_km;
+
+    // Normalized transition from pad (0 km) to LEO (613.5 km)
+    const spaceFactor = Math.min(1, alt / 160);
+    const grad = ctx.createLinearGradient(0, 0, 0, h);
+
+    if (spaceFactor < 0.85) {
+      grad.addColorStop(0, '#03045E');
+      grad.addColorStop(Math.max(0.15, 0.36 - spaceFactor * 0.25), '#023E8A');
+      grad.addColorStop(Math.max(0.35, 0.72 - spaceFactor * 0.42), '#0077B6');
+      grad.addColorStop(1, spaceFactor < 0.35 ? '#CAF0F8' : '#0077B6');
+    } else {
+      // High-altitude / 613.5 km Low Earth Orbit dark space with Earth limb glow at bottom
+      grad.addColorStop(0, '#010214');
+      grad.addColorStop(0.55, '#03045E');
+      grad.addColorStop(0.84, '#023E8A');
+      grad.addColorStop(0.95, '#0077B6');
+      grad.addColorStop(1, '#CAF0F8');
+    }
+
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, w, h);
+
+    // Stars fade in above 25 km altitude
+    if (alt > 25) {
+      const starVisibility = Math.min(1, (alt - 25) / 95);
+      ctx.save();
+      stars.forEach((s) => {
+        ctx.fillStyle = `rgba(255, 255, 255, ${(s.alpha * starVisibility).toFixed(3)})`;
+        ctx.beginPath();
+        ctx.arc(s.xRatio * w, s.yRatio * h, s.radius, 0, Math.PI * 2);
+        ctx.fill();
+      });
+      ctx.restore();
+    }
+  }
+
+  /**
+   * Renders Launch Complex 39B Tower (Resorces/image 16.png) on the left of the pad.
+   * Zooms out and drops away as Discovery lifts off.
+   */
+  function drawLaunchTower(state, scaleFactor) {
+    if (state.altitude_km > 8 || !ready(images.tower)) return;
+
+    const groundY = canvas.height * (1 - 0.092 * Math.max(0, 1 / (1 + state.altitude_km * 1.8)));
+    const towerZoom = Math.max(0, 1 / (1 + state.altitude_km * 1.4));
+    const dropOffset = state.altitude_km * 180;
+
+    const towerW = 138 * scaleFactor * towerZoom;
+    const towerH = 717 * scaleFactor * towerZoom;
+    const towerX = canvas.width * 0.14;
+    const towerY = groundY - towerH + dropOffset;
+
+    if (towerY > canvas.height) return;
+
+    ctx.save();
+    ctx.globalAlpha = 0.62 * towerZoom;
+    ctx.drawImage(images.tower, towerX, towerY, towerW, towerH);
+    ctx.restore();
+  }
+
+  /**
+   * Draws an engine exhaust plume beneath an engine nozzle
+   */
+  function drawExhaustPlume(x, y, width, length, isSRB) {
+    const flicker = 0.92 + Math.random() * 0.16;
+    const h = length * flicker;
+
+    const grad = ctx.createRadialGradient(x, y + h * 0.25, width * 0.1, x, y + h * 0.45, h * 0.75);
+    if (isSRB) {
+      grad.addColorStop(0, 'rgba(255, 255, 240, 0.98)');
+      grad.addColorStop(0.35, 'rgba(255, 195, 45, 0.92)');
+      grad.addColorStop(0.7, 'rgba(255, 110, 20, 0.55)');
+      grad.addColorStop(1, 'rgba(255, 80, 0, 0)');
+    } else {
+      // Liquid H2/O2 blue-white SSME plume
+      grad.addColorStop(0, 'rgba(235, 250, 255, 0.95)');
+      grad.addColorStop(0.45, 'rgba(110, 210, 255, 0.75)');
+      grad.addColorStop(1, 'rgba(0, 119, 182, 0)');
+    }
 
     ctx.save();
     ctx.fillStyle = grad;
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-    // Draw subtle altitude band labels on the right edge matching the 4 color shades
-    const bandAltitudes = [
-      { label: '0 m — #CAF0F8', yMeters: 0, color: SKY_SHADES[0] },
-      { label: '500 m — #0077B6', yMeters: 500, color: SKY_SHADES[1] },
-      { label: '1500 m — #023E8A', yMeters: 1500, color: SKY_SHADES[2] },
-      { label: '3000 m — #03045E', yMeters: 3000, color: SKY_SHADES[3] }
-    ];
-
-    ctx.font = '600 11px Inter, Segoe UI, sans-serif';
-    ctx.textAlign = 'right';
-    bandAltitudes.forEach((band) => {
-      const sy = metrics.toScreenY(band.yMeters);
-      if (sy > 140 && sy < metrics.groundY - 8) {
-        ctx.fillStyle = 'rgba(255, 255, 255, 0.65)';
-        ctx.fillText(band.label, canvas.width - 18, sy - 6);
-      }
-    });
-
-    // Draw Target Height Limit marker line & Falcon 9 Flight Phase HUD
-    const targetAlt = currentState.target_altitude || 500;
-    const targetY = metrics.toScreenY(targetAlt);
-    if (targetY > 130 && targetY < metrics.groundY - 10) {
-      ctx.strokeStyle = 'rgba(255, 192, 30, 0.85)';
-      ctx.lineWidth = 1.5;
-      ctx.setLineDash([6, 6]);
-      ctx.beginPath();
-      ctx.moveTo(canvas.width * 0.28, targetY);
-      ctx.lineTo(canvas.width * 0.74, targetY);
-      ctx.stroke();
-      ctx.setLineDash([]);
-
-      ctx.fillStyle = '#ffc01e';
-      ctx.textAlign = 'left';
-      ctx.fillText(`TARGET HEIGHT LIMIT: ${targetAlt.toFixed(0)} m`, canvas.width * 0.28 + 8, targetY - 6);
-    }
-
-    // Flight Phase Telemetry Status Pill
-    const phaseLabels = {
-      IDLE: 'PAD STANDBY — READY FOR LAUNCH',
-      ASCENT: 'FALCON 9 ASCENT — MAIN ENGINE BURN',
-      COAST: 'MECO — COASTING TO TARGET APOGEE',
-      DESCENT: 'GRID-FIN VERTICAL DESCENT',
-      LANDING_BURN: 'SUICIDE BURN — HOVERSLAM ACTIVE',
-      LANDED: `LANDED SAFELY (TOUCHDOWN: ${(currentState.touchdown_speed || 0).toFixed(2)} m/s)`
-    };
-    const statusText = phaseLabels[currentState.phase] || 'STANDBY';
-    ctx.textAlign = 'center';
-    ctx.font = '700 12px Inter, Segoe UI, sans-serif';
-    ctx.fillStyle = currentState.phase === 'LANDED' ? '#4ade80' : '#ffffff';
-    ctx.fillText(statusText, canvas.width * 0.51, 162);
-
-    ctx.restore();
-  }
-
-  /**
-   * Renders the continuous blue trajectory trace for 'trajectory' mode
-   */
-  function drawTrajectoryTrace(metrics) {
-    if (flightHistory.length < 2) return;
-
-    ctx.save();
     ctx.beginPath();
-    for (let i = 0; i < flightHistory.length; i++) {
-      const pt = flightHistory[i];
-      const sx = metrics.toScreenX(pt.position_x);
-      const sy = metrics.toScreenY(pt.position_y);
-      if (i === 0) ctx.moveTo(sx, sy);
-      else ctx.lineTo(sx, sy);
-    }
-
-    ctx.strokeStyle = '#00e5ff';
-    ctx.lineWidth = 3;
-    ctx.lineJoin = 'round';
-    ctx.lineCap = 'round';
-    ctx.shadowColor = 'rgba(0, 229, 255, 0.55)';
-    ctx.shadowBlur = 8;
-    ctx.stroke();
-    ctx.restore();
-  }
-
-  /**
-   * Renders the translucent time-series overlay box for 'velocity' or 'gforce'
-   */
-  function drawMetricOverlayChart(mode) {
-    const isVelocity = mode === 'velocity';
-    const title = isVelocity ? 'VELOCITY VS. TIME (M/S)' : 'G-FORCE VS. TIME (G)';
-    const metricKey = isVelocity ? 'velocity' : 'g_force';
-    const strokeColor = isVelocity ? '#ffc01e' : '#ff7034';
-
-    const boxW = Math.min(520, canvas.width * 0.42);
-    const boxH = 230;
-    const boxX = canvas.width - boxW - 36;
-    const boxY = 155;
-    const padL = 54;
-    const padR = 24;
-    const padT = 44;
-    const padB = 34;
-
-    ctx.save();
-
-    // Translucent overlay window box
-    ctx.fillStyle = 'rgba(6, 36, 44, 0.82)';
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.65)';
-    ctx.lineWidth = 1.5;
-    ctx.beginPath();
-    ctx.roundRect(boxX, boxY, boxW, boxH, 14);
+    ctx.ellipse(x, y + h * 0.42, width * 0.65, h * 0.58, 0, 0, Math.PI * 2);
     ctx.fill();
-    ctx.stroke();
-
-    // Header label
-    ctx.fillStyle = '#ffffff';
-    ctx.font = '700 13px Inter, Segoe UI, sans-serif';
-    ctx.fillText(title, boxX + 20, boxY + 26);
-
-    const plotX = boxX + padL;
-    const plotY = boxY + padT;
-    const plotW = boxW - padL - padR;
-    const plotH = boxH - padT - padB;
-
-    // Axes
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)';
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.moveTo(plotX, plotY);
-    ctx.lineTo(plotX, plotY + plotH);
-    ctx.lineTo(plotX + plotW, plotY + plotH);
-    ctx.stroke();
-
-    let maxTime = 10;
-    let maxVal = isVelocity ? 150 : 5;
-    for (let i = 0; i < flightHistory.length; i++) {
-      if (flightHistory[i].time > maxTime) maxTime = flightHistory[i].time;
-      if (flightHistory[i][metricKey] > maxVal) maxVal = flightHistory[i][metricKey];
-    }
-    maxVal *= 1.1;
-
-    // Axis labels
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.78)';
-    ctx.font = '600 11px Inter, Segoe UI, sans-serif';
-    ctx.fillText(maxVal.toFixed(1), boxX + 12, plotY + 8);
-    ctx.fillText('0.0', boxX + 22, plotY + plotH);
-    ctx.fillText('0s', plotX, plotY + plotH + 18);
-    ctx.fillText(maxTime.toFixed(1) + 's', plotX + plotW - 28, plotY + plotH + 18);
-
-    // Data curve
-    if (flightHistory.length > 1) {
-      ctx.beginPath();
-      for (let i = 0; i < flightHistory.length; i++) {
-        const pt = flightHistory[i];
-        const px = plotX + (pt.time / maxTime) * plotW;
-        const py = plotY + plotH - (pt[metricKey] / maxVal) * plotH;
-        if (i === 0) ctx.moveTo(px, py);
-        else ctx.lineTo(px, py);
-      }
-      ctx.strokeStyle = strokeColor;
-      ctx.lineWidth = 2.5;
-      ctx.lineJoin = 'round';
-      ctx.stroke();
-    }
-
     ctx.restore();
   }
 
   /**
-   * Renders the rocket sprite using a 2D canvas translation + rotation matrix
-   * aligned to the velocity direction vector and scaled by cameraZoom.
+   * Renders the deployed Hubble Space Telescope (HST) in 613.5 km Low Earth Orbit
    */
-  function drawRocketSprite(screenX, screenY, angleRad, thrustActive, zoom) {
-    const scale = zoom;
+  function drawHubbleTelescope(cx, cy, scale, deployProgress) {
+    if (deployProgress <= 0) return;
 
     ctx.save();
-    ctx.translate(screenX, screenY);
-    // Sprite local -Y axis points toward nose; rotate by (Math.PI / 2 - angleRad)
-    ctx.rotate(Math.PI / 2 - angleRad);
+    ctx.translate(cx, cy);
     ctx.scale(scale, scale);
+    ctx.globalAlpha = Math.min(1, deployProgress * 1.4);
 
-    // Exhaust plume
-    if (thrustActive) {
-      if (images.flame && images.flame.complete && images.flame.naturalWidth) {
-        ctx.drawImage(images.flame, -78, -28, 156, 250);
-      } else {
-        const grad = ctx.createRadialGradient(0, 80, 5, 0, 80, 90);
-        grad.addColorStop(0, 'rgba(255, 200, 49, 0.95)');
-        grad.addColorStop(0.6, 'rgba(255, 135, 49, 0.5)');
-        grad.addColorStop(1, 'rgba(255, 135, 49, 0)');
-        ctx.fillStyle = grad;
-        ctx.beginPath();
-        ctx.ellipse(0, 85, 42, 95, 0, 0, Math.PI * 2);
-        ctx.fill();
-      }
-    }
-
-    // Engine Nozzle
-    if (images.nozzle && images.nozzle.complete && images.nozzle.naturalWidth) {
-      ctx.save();
-      ctx.translate(0, -52);
-      ctx.scale(1, -1);
-      ctx.drawImage(images.nozzle, -53, -65, 106, 131);
-      ctx.restore();
-    } else {
-      ctx.fillStyle = '#1f1f1f';
-      ctx.beginPath();
-      ctx.moveTo(-18, -26);
-      ctx.lineTo(18, -26);
-      ctx.lineTo(24, 0);
-      ctx.lineTo(-24, 0);
-      ctx.closePath();
-      ctx.fill();
-    }
-
-    // Aerodynamic Fins
-    ctx.fillStyle = '#036980';
+    // Solar Array Wings (extend outward as deployProgress -> 1)
+    const wingSpan = 28 + deployProgress * 64;
+    ctx.strokeStyle = '#d4af37';
+    ctx.lineWidth = 2.5;
     ctx.beginPath();
-    ctx.moveTo(-35, -240);
-    ctx.lineTo(-56, -40);
-    ctx.lineTo(-35, -40);
-    ctx.closePath();
-    ctx.fill();
+    ctx.moveTo(-wingSpan, 0);
+    ctx.lineTo(wingSpan, 0);
+    ctx.stroke();
 
-    ctx.beginPath();
-    ctx.moveTo(35, -240);
-    ctx.lineTo(56, -40);
-    ctx.lineTo(35, -40);
-    ctx.closePath();
-    ctx.fill();
+    // Left & Right Solar Panels
+    ctx.fillStyle = '#023E8A';
+    ctx.strokeStyle = '#ffd166';
+    ctx.lineWidth = 1.5;
+    ctx.fillRect(-wingSpan - 18, -32, 22, 64);
+    ctx.strokeRect(-wingSpan - 18, -32, 22, 64);
+    ctx.fillRect(wingSpan - 4, -32, 22, 64);
+    ctx.strokeRect(wingSpan - 4, -32, 22, 64);
 
-    // SpaceX Falcon 9 Deployable Landing Legs (deploy during landing burn & touchdown)
-    if (currentState.legs_deployed) {
-      ctx.strokeStyle = '#1d2122';
-      ctx.lineWidth = 6;
-      ctx.lineCap = 'round';
-      ctx.beginPath();
-      // Left landing leg + strut
-      ctx.moveTo(-35, -75);
-      ctx.lineTo(-78, 2);
-      ctx.moveTo(-35, -45);
-      ctx.lineTo(-62, -18);
-      // Right landing leg + strut
-      ctx.moveTo(35, -75);
-      ctx.lineTo(78, 2);
-      ctx.moveTo(35, -45);
-      ctx.lineTo(62, -18);
-      ctx.stroke();
-    }
-
-    // Cylindrical Fuselage
-    const bodyGrad = ctx.createLinearGradient(-35, 0, 35, 0);
-    bodyGrad.addColorStop(0, '#5a5a5a');
-    bodyGrad.addColorStop(0.5, '#b8b8b8');
-    bodyGrad.addColorStop(1, '#5a5a5a');
+    // Hubble Silver Aft Shroud & Forward Optical Telescope Assembly Cylinder
+    const bodyGrad = ctx.createLinearGradient(-16, 0, 16, 0);
+    bodyGrad.addColorStop(0, '#9aa5b1');
+    bodyGrad.addColorStop(0.5, '#f5f7fa');
+    bodyGrad.addColorStop(1, '#7b8794');
     ctx.fillStyle = bodyGrad;
-    ctx.fillRect(-35, -388, 70, 362);
+    ctx.fillRect(-16, -24, 32, 48);
+    ctx.fillRect(-12, -52, 24, 28);
 
-    // Nose Cone
-    if (images.nose && images.nose.complete && images.nose.naturalWidth) {
-      ctx.drawImage(images.nose, -40, -563, 80, 178);
-    } else {
-      const noseGrad = ctx.createRadialGradient(0, -450, 5, 0, -450, 80);
-      noseGrad.addColorStop(0, '#d8d8d8');
-      noseGrad.addColorStop(1, '#686868');
-      ctx.fillStyle = noseGrad;
-      ctx.beginPath();
-      ctx.moveTo(-40, -388);
-      ctx.lineTo(-40, -475);
-      ctx.quadraticCurveTo(-5, -563, 0, -563);
-      ctx.quadraticCurveTo(5, -563, 40, -475);
-      ctx.lineTo(40, -388);
-      ctx.closePath();
-      ctx.fill();
-    }
+    // Open Aperture Door
+    ctx.fillStyle = '#e4e7eb';
+    ctx.beginPath();
+    ctx.moveTo(-12, -52);
+    ctx.lineTo(-22, -68);
+    ctx.lineTo(-8, -68);
+    ctx.closePath();
+    ctx.fill();
 
     ctx.restore();
   }
 
   /**
-   * Updates DOM telemetry readouts
+   * Renders the complete STS-31 Space Shuttle Discovery stack using the updated Resorces PNGs:
+   * - External Tank (Group 71.png)
+   * - Left SRB (Group 55.png) & Right SRB (Group 72.png)
+   * - Discovery Orbiter (Group 59.png)
    */
-  function updateTelemetryDOM(state) {
-    if (elAltitude) elAltitude.textContent = state.position_y.toFixed(2);
-    if (elDistance) elDistance.textContent = state.position_x.toFixed(2);
-    if (elVelocity) elVelocity.textContent = state.velocity.toFixed(2);
-    if (elAcceleration) elAcceleration.textContent = state.acceleration.toFixed(2);
-    if (elGForce) elGForce.textContent = state.g_force.toFixed(2);
-    if (elMass) elMass.textContent = state.mass.toFixed(2) + ' kg';
-    if (elThrust) elThrust.textContent = state.thrust.toFixed(2) + ' N';
-    if (elFuel) elFuel.textContent = Math.round(state.fuel_percent) + '%';
-    if (elFuelBar) elFuelBar.value = state.fuel_percent;
+  function drawShuttleStack(state, scaleFactor) {
+    const cx = canvas.width * 0.505;
+    const baseGroundY = canvas.height * 0.908;
+
+    // Smooth vertical position from Launch Pad 39B on ground up to orbital center viewport
+    const climbProgress = Math.min(1, state.altitude_km / 45);
+    const stackBaseY = baseGroundY - climbProgress * (canvas.height * 0.14);
+
+    // Dimensions matching Figma 463:863 proportions scaled to viewport
+    const etW = 112 * scaleFactor;
+    const etH = 423 * scaleFactor;
+    const srbW = 64 * scaleFactor;
+    const srbH = 495 * scaleFactor;
+    const orbW = 187 * scaleFactor;
+    const orbH = 274 * scaleFactor;
+
+    const etX = cx - etW * 0.5;
+    const etY = stackBaseY - etH - 22 * scaleFactor;
+
+    ctx.save();
+
+    // 1. External Tank (Group 71.png) — detaches and drifts away after T+00:08:50 (ET SEP)
+    if (!state.et_separated || state.et_sep_progress < 1) {
+      const etSepP = state.et_sep_progress;
+      const etDropY = etSepP * etSepP * 260 * scaleFactor;
+      const etDriftX = -etSepP * 90 * scaleFactor;
+
+      ctx.save();
+      ctx.globalAlpha = Math.max(0, 1 - etSepP * 0.95);
+      ctx.translate(etX + etW * 0.5 + etDriftX, etY + etH * 0.5 + etDropY);
+      ctx.rotate(-etSepP * 0.22);
+      if (ready(images.externalTank)) {
+        ctx.drawImage(images.externalTank, -etW * 0.5, -etH * 0.5, etW, etH);
+      }
+      ctx.restore();
+    }
+
+    // 2. Left SRB (Group 55.png) & Right SRB (Group 72.png) — detach at T+00:02:04 (46.3 km)
+    if (!state.srb_separated || state.srb_sep_progress < 1) {
+      const sepP = state.srb_separated ? state.srb_sep_progress : 0;
+      const spreadX = sepP * 195 * scaleFactor;
+      const dropY = sepP * sepP * 310 * scaleFactor;
+      const srbAlpha = Math.max(0, 1 - sepP * 0.95);
+
+      const leftSrbX = cx - etW * 0.5 - srbW * 0.85 - spreadX;
+      const rightSrbX = cx + etW * 0.5 - srbW * 0.15 + spreadX;
+      const srbY = stackBaseY - srbH + dropY;
+
+      if (state.srb_active) {
+        drawExhaustPlume(leftSrbX + srbW * 0.5, srbY + srbH - 8 * scaleFactor, 38 * scaleFactor, 155 * scaleFactor, true);
+        drawExhaustPlume(rightSrbX + srbW * 0.5, srbY + srbH - 8 * scaleFactor, 38 * scaleFactor, 155 * scaleFactor, true);
+      }
+
+      // Left SRB
+      ctx.save();
+      ctx.globalAlpha = srbAlpha;
+      ctx.translate(leftSrbX + srbW * 0.5, srbY + srbH * 0.5);
+      ctx.rotate(-sepP * 0.42);
+      if (ready(images.leftSRB)) {
+        ctx.drawImage(images.leftSRB, -srbW * 0.5, -srbH * 0.5, srbW, srbH);
+      }
+      ctx.restore();
+
+      // Right SRB
+      ctx.save();
+      ctx.globalAlpha = srbAlpha;
+      ctx.translate(rightSrbX + srbW * 0.5, srbY + srbH * 0.5);
+      ctx.rotate(sepP * 0.42);
+      if (ready(images.rightSRB)) {
+        ctx.drawImage(images.rightSRB, -srbW * 0.5, -srbH * 0.5, srbW, srbH);
+      }
+      ctx.restore();
+    }
+
+    // 3. Space Shuttle Discovery Orbiter (Group 59.png)
+    const orbX = cx - orbW * 0.5;
+    const orbY = stackBaseY - orbH - 68 * scaleFactor;
+
+    if (state.ssme_active) {
+      drawExhaustPlume(cx, orbY + orbH - 4 * scaleFactor, 34 * scaleFactor, 120 * scaleFactor, false);
+    }
+
+    // Max-Q transonic condensation halo around T+00:00:52 (11 km)
+    if (state.time >= 42 && state.time <= 62) {
+      const qIntensity = 1 - Math.abs(state.time - 52) / 10;
+      ctx.save();
+      ctx.strokeStyle = `rgba(202, 240, 248, ${(qIntensity * 0.55).toFixed(2)})`;
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.ellipse(cx, orbY + orbH * 0.35, orbW * 0.68, 22 * scaleFactor, 0, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    if (ready(images.orbiter)) {
+      ctx.drawImage(images.orbiter, orbX, orbY, orbW, orbH);
+    }
+
+    // 4. Hubble Space Telescope Deployment in 613.5 km LEO (T+00:42:15)
+    if (state.hubble_deployed) {
+      const hubbleY = orbY - (55 + state.hubble_deploy_progress * 85) * scaleFactor;
+      drawHubbleTelescope(cx, hubbleY, scaleFactor, state.hubble_deploy_progress);
+    }
+
+    // 5. Subtle Stage Status Caption at bottom of viewport
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.85)';
+    ctx.font = '300 13px "Google Sans Flex", Inter, Segoe UI, sans-serif';
+    ctx.textAlign = 'center';
+    const caption = state.completed
+      ? 'STS-31 HUBBLE SPACE TELESCOPE DEPLOYED IN LOW EARTH ORBIT (613.5 KM) — CLICK TO REPLAY'
+      : `STS-31 DISCOVERY  |  STAGE: ${state.phase}`;
+    ctx.fillText(caption, canvas.width * 0.5, canvas.height - 26);
+
+    ctx.restore();
   }
 
   /**
-   * Main Canvas Render Pass
+   * Main Animation Loop (starts automatically on load from T-00:00:10 countdown)
    */
-  function renderFrame() {
+  function animate(timestamp) {
+    if (!lastTimestamp) lastTimestamp = timestamp;
+    const dt = Math.min(0.05, (timestamp - lastTimestamp) / 1000);
+    lastTimestamp = timestamp;
+
+    currentState = engine.update(dt);
+    syncTelemetryDOM(currentState);
+
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    const metrics = getViewportMetrics();
+    const scaleFactor = Math.min(1.0, Math.max(0.55, canvas.height / 1024));
 
-    drawAtmosphereShades(metrics);
+    drawSkyAndAtmosphere(currentState);
+    drawLaunchTower(currentState, scaleFactor);
+    drawShuttleStack(currentState, scaleFactor);
 
-    if (activeViewMode === 'trajectory') {
-      drawTrajectoryTrace(metrics);
-    }
-
-    const rocketScreenX = metrics.toScreenX(currentState.position_x);
-    const rocketScreenY = metrics.toScreenY(currentState.position_y);
-    const thrustActive = isRunning && currentState.thrust > 0 && !currentState.landed;
-
-    drawRocketSprite(rocketScreenX, rocketScreenY, currentAngleRad, thrustActive, metrics.cameraZoom);
-
-    if (activeViewMode === 'velocity' || activeViewMode === 'gforce') {
-      drawMetricOverlayChart(activeViewMode);
-    }
+    requestAnimationFrame(animate);
   }
 
-  /**
-   * Real-time Animation Ticker
-   */
-  function tickSimulation() {
-    // Advance physics (2 sub-steps per frame for brisk visual pacing at 60fps)
-    for (let i = 0; i < 2; i++) {
-      currentState = engine.update(0.016);
-      flightHistory.push(currentState);
-      if (currentState.landed) break;
+  // Click anywhere after orbital deployment to restart from T-00:00:10 countdown
+  window.addEventListener('click', () => {
+    if (currentState.completed) {
+      currentState = engine.reset();
+      syncTelemetryDOM(currentState);
     }
-
-    // Keep Falcon 9 booster oriented vertically (upright) for VTVL ascent & propulsive landing
-    const tiltTarget = Math.PI / 2 - (currentState.velocity_x * 0.015);
-    currentAngleRad += (tiltTarget - currentAngleRad) * 0.2;
-
-    updateTelemetryDOM(currentState);
-    audio.updateThrustRumble(currentState.thrust > 0 && !currentState.landed, currentState.velocity);
-    renderFrame();
-
-    if (!currentState.landed) {
-      animId = requestAnimationFrame(tickSimulation);
-    } else {
-      isRunning = false;
-      audio.playImpactAlert();
-      renderFrame();
-    }
-  }
-
-  // 1. Orange Chart Panel Button Handlers ('trajectory', 'velocity', 'gforce')
-  chartTabs.forEach((tab, index) => {
-    tab.addEventListener('click', () => {
-      chartTabs.forEach((t) => t.classList.remove('is-active'));
-      tab.classList.add('is-active');
-      activeViewMode = tab.dataset.mode || VIEW_MODES[index] || 'trajectory';
-      renderFrame();
-    });
-  });
-
-  // 2. Play Simulation Trigger
-  if (playBtn) {
-    playBtn.addEventListener('click', () => {
-      controlPanel?.classList.add('is-hidden');
-      chartPanel?.classList.add('is-hidden');
-      openLeftDrawer?.classList.remove('is-hidden');
-      openRightDrawer?.classList.remove('is-hidden');
-
-      cancelAnimationFrame(animId);
-      const userHeightLimit = Math.max(50, Number(inputTargetAltitude?.value) || 500);
-      currentState = engine.reset(userHeightLimit);
-      flightHistory = [currentState];
-      currentAngleRad = Math.PI / 2;
-      cameraZoom = 1.0;
-      isRunning = true;
-
-      updateTelemetryDOM(currentState);
-      audio.playIgnition();
-      animId = requestAnimationFrame(tickSimulation);
-    });
-  }
-
-  // Drawer Toggle Handlers
-  openLeftDrawer?.addEventListener('click', () => {
-    controlPanel?.classList.remove('is-hidden');
-    openLeftDrawer.classList.add('is-hidden');
-  });
-
-  openRightDrawer?.addEventListener('click', () => {
-    chartPanel?.classList.remove('is-hidden');
-    openRightDrawer.classList.add('is-hidden');
   });
 
   function handleResize() {
     canvas.width = window.innerWidth;
     canvas.height = window.innerHeight;
-    renderFrame();
   }
 
   window.addEventListener('resize', handleResize);
   handleResize();
+  syncTelemetryDOM(currentState);
+  requestAnimationFrame(animate);
 })();

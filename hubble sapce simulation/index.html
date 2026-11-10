@@ -3,119 +3,128 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Rocket Telemetry Dashboard</title>
+  <title>STS-31 Hubble Space Telescope — Launch to LEO Simulation</title>
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
-  <main class="dashboard">
-    <!-- Central Workspace: Full-bleed Sky Viewport & HTML5 Canvas -->
-    <section class="workspace" aria-label="Rocket Simulation Viewport">
-      <canvas id="simulation-canvas" class="simulation-canvas"></canvas>
+  <main class="simulation-viewport">
+    <!-- Full-bleed HTML5 Canvas for Atmosphere, Launch Tower, Shuttle Stack & Hubble LEO Deployment -->
+    <canvas id="simulation-canvas" class="simulation-canvas" aria-label="STS-31 Space Shuttle Discovery and Hubble Space Telescope Launch Simulation"></canvas>
 
-      <!-- Horizontal Dotted Grid Altitude Marker Lines -->
-      <div class="altitude-grid" aria-hidden="true">
-        <div class="grid-line"></div>
-        <div class="grid-line"></div>
-        <div class="grid-line"></div>
-        <div class="grid-line"></div>
+    <!-- Horizontal Dashed Altitude Marker Lines (Figma 463:863) -->
+    <div class="altitude-grid" aria-hidden="true">
+      <div class="grid-line"></div>
+      <div class="grid-line"></div>
+      <div class="grid-line"></div>
+    </div>
+
+    <!-- Top Telemetry HUD matching Figma node 463:863 -->
+    <header class="telemetry-hud" aria-label="STS-31 Mission Telemetry">
+      <!-- Left Cluster: Thrust, Velocity, Pressure -->
+      <div class="gauge-cluster gauge-cluster-left">
+        <div class="gauge-item">
+          <span class="gauge-title">Thrust</span>
+          <div class="gauge-circle">
+            <span class="gauge-value" id="val-thrust">--</span>
+          </div>
+          <span class="gauge-unit">N</span>
+        </div>
+
+        <div class="gauge-item">
+          <span class="gauge-title">Velocity</span>
+          <div class="gauge-circle">
+            <span class="gauge-value" id="val-velocity">--</span>
+          </div>
+          <span class="gauge-unit">km/s</span>
+        </div>
+
+        <div class="gauge-item">
+          <span class="gauge-title">Pressure</span>
+          <div class="gauge-circle">
+            <span class="gauge-value" id="val-pressure">--</span>
+          </div>
+          <span class="gauge-unit">kPa</span>
+        </div>
       </div>
 
-      <!-- Launchpad & Ground Container -->
-      <div class="launchpad" aria-hidden="true"></div>
-      <div class="ground-container" aria-hidden="true"></div>
-    </section>
+      <!-- Center Mission Clock & Stage Metadata -->
+      <div class="mission-clock-panel">
+        <div class="mission-clock" id="val-clock">00 : 00 : 00</div>
+        <div class="clock-divider" aria-hidden="true"></div>
+        <div class="mission-meta-row">
+          <div class="meta-col">
+            <span class="meta-label">Start</span>
+            <span class="meta-value" id="val-start">---</span>
+          </div>
+          <div class="meta-col">
+            <span class="meta-label">Next Stage</span>
+            <span class="meta-value" id="val-next-stage">---</span>
+          </div>
+          <div class="meta-col">
+            <span class="meta-label">Duration</span>
+            <span class="meta-value" id="val-duration">---</span>
+          </div>
+        </div>
+      </div>
 
-    <!-- 1. Top Telemetry Bar -->
-    <header class="telemetry-bar" aria-label="Live Rocket Telemetry">
-      <div class="telemetry-card">
-        <span class="telemetry-label">Altitude (h)</span>
-        <span class="telemetry-value"><span id="val-altitude">0.00</span> m</span>
-      </div>
-      <div class="telemetry-card">
-        <span class="telemetry-label">D.Distance (x)</span>
-        <span class="telemetry-value"><span id="val-distance">0.00</span> m</span>
-      </div>
-      <div class="telemetry-card">
-        <span class="telemetry-label">Velocity (v)</span>
-        <span class="telemetry-value"><span id="val-velocity">0.00</span> m/s</span>
-      </div>
-      <div class="telemetry-card">
-        <span class="telemetry-label">Acceleration (a)</span>
-        <span class="telemetry-value"><span id="val-acceleration">0.00</span> m/s<sup>2</sup></span>
-      </div>
-      <div class="telemetry-card">
-        <span class="telemetry-label">G-Force (G)</span>
-        <span class="telemetry-value"><span id="val-gforce">0.00</span> G</span>
+      <!-- Right Cluster: Altitude, Downrange, Temperature -->
+      <div class="gauge-cluster gauge-cluster-right">
+        <div class="gauge-item">
+          <span class="gauge-title">Altitude</span>
+          <div class="gauge-circle">
+            <span class="gauge-value" id="val-altitude">--</span>
+          </div>
+          <span class="gauge-unit">km</span>
+        </div>
+
+        <div class="gauge-item">
+          <span class="gauge-title">Downrange</span>
+          <div class="gauge-circle">
+            <span class="gauge-value" id="val-downrange">--</span>
+          </div>
+          <span class="gauge-unit">km</span>
+        </div>
+
+        <div class="gauge-item">
+          <span class="gauge-title">Temperature</span>
+          <div class="gauge-circle">
+            <span class="gauge-value" id="val-temperature">--</span>
+          </div>
+          <span class="gauge-unit">C</span>
+        </div>
       </div>
     </header>
 
-    <!-- 3. Left Control Panel (Yellow #FFC01E) -->
-    <aside class="control-panel" id="control-panel" aria-label="Simulation Controls">
-      <button type="button" class="play-action-btn" id="play-btn">
-        <span class="play-icon-wrapper" aria-hidden="true">
-          <svg class="play-icon" viewBox="0 0 24 24" fill="none">
-            <path d="M8 5.5V18.5L18 12L8 5.5Z" stroke="currentColor" stroke-width="2" stroke-linejoin="round" />
-          </svg>
-        </span>
-        <span class="play-btn-label" id="play-label">Play Simulation</span>
-      </button>
-
-      <div class="control-cards">
-        <label class="data-card data-card-input" for="input-target-altitude">
-          <span class="data-label">Height Limit (h<sub>max</sub>)</span>
-          <div class="input-unit-wrapper">
-            <input
-              type="number"
-              id="input-target-altitude"
-              class="altitude-input"
-              value="500"
-              min="50"
-              max="10000"
-              step="50"
-              aria-label="Target Height Limit in meters"
-            />
-            <span class="input-unit">m</span>
-          </div>
-        </label>
-
-        <div class="data-card">
-          <span class="data-label">Vehicle Mass (m)</span>
-          <span class="data-value" id="val-mass">12.45 kg</span>
-        </div>
-
-        <div class="data-card">
-          <span class="data-label">Thrust Force (F<sub>T</sub>)</span>
-          <span class="data-value" id="val-thrust">250.00 N</span>
-        </div>
-
-        <div class="data-card data-card-progress">
-          <div class="data-row">
-            <span class="data-label">Fuel remaining</span>
-            <span class="data-value" id="val-fuel">100%</span>
-          </div>
-          <progress class="fuel-progress" id="fuel-bar" value="100" max="100">100%</progress>
-        </div>
+    <!-- Bottom-Right Fuel Ring Gauge (Figma 466:1166) -->
+    <aside class="fuel-widget" aria-label="External Tank Fuel Remaining">
+      <span class="fuel-title">Fuel</span>
+      <div class="fuel-ring-container">
+        <svg class="fuel-ring-svg" viewBox="0 0 200 200" aria-hidden="true">
+          <circle
+            class="fuel-ring-track"
+            cx="100"
+            cy="100"
+            r="84"
+            stroke-dasharray="475 528"
+          />
+          <circle
+            class="fuel-ring-progress"
+            id="fuel-ring-arc"
+            cx="100"
+            cy="100"
+            r="84"
+            stroke-dasharray="475 528"
+          />
+        </svg>
+        <span class="fuel-value" id="val-fuel">-- %</span>
       </div>
     </aside>
 
-    <!-- Collapsed Left Drawer Tab (Figma Frame 2 & 3 state) -->
-    <button type="button" class="drawer-tab drawer-tab-left is-hidden" id="open-left-drawer" aria-label="Expand Simulation Panel">
-      <span class="drawer-tab-body">Simulation</span>
-      <span class="drawer-tab-arrow" aria-hidden="true">&#10095;</span>
-    </button>
-
-    <!-- 4. Right Chart Panel (Orange #FF7034) -->
-    <aside class="chart-panel" id="chart-panel" aria-label="Telemetry Charts">
-      <button type="button" class="chart-tab is-active" data-mode="trajectory">Altitude vs. Downrange Distance</button>
-      <button type="button" class="chart-tab" data-mode="velocity">Velocity vs. Time</button>
-      <button type="button" class="chart-tab" data-mode="gforce">G-Force vs. Time</button>
-    </aside>
-
-    <!-- Collapsed Right Drawer Tab (Figma Frame 2 & 3 state) -->
-    <button type="button" class="drawer-tab drawer-tab-right is-hidden" id="open-right-drawer" aria-label="Expand Relations Graph Panel">
-      <span class="drawer-tab-arrow" aria-hidden="true">&#10094;</span>
-      <span class="drawer-tab-body">Relations | Graph</span>
-    </button>
+    <!-- Launchpad & Ground Terrain (Zooms out smoothly on Liftoff) -->
+    <div class="launchpad" aria-hidden="true"></div>
+    <div class="ground-container" aria-hidden="true">
+      <div class="ground-pill"></div>
+    </div>
   </main>
 
   <script src="RocketSimulationEngine.js"></script>

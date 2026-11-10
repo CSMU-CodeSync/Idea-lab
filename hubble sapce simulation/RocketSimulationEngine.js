@@ -1,248 +1,202 @@
 /**
- * RocketSimulationEngine
- * Modular 2D aerospace telemetry & physics engine using Euler-Cromer integration
- * with SpaceX Falcon 9 VTVL (Vertical Takeoff, Vertical Landing) closed-loop guidance.
+ * RocketSimulationEngine.js
+ * NASA STS-31 (Space Shuttle Discovery / Hubble Space Telescope)
+ * Launch-to-Low-Earth-Orbit (LEO, 613.5 km) Timeline & Telemetry Engine.
  */
 class RocketSimulationEngine {
-  static GRAVITY = 9.81;        // m/s²
-  static DRY_MASS = 4.0;        // kg
-  static BURN_RATE = 0.5;       // kg/s
-  static INITIAL_THRUST = 250;  // N
+  static LEO_ALTITUDE_KM = 613.5;
+  static LEO_VELOCITY_KMS = 7.59;
 
-  /**
-   * @param {Object} [config]
-   * @param {number} [config.initialFuelMass=8.45] - Initial propellant mass in kg (4.0 + 8.45 = 12.45 kg total)
-   * @param {number} [config.targetAltitude=500] - User-defined target apogee height limit in meters
-   * @param {number} [config.dragCoefficient=0.002] - Lumped aerodynamic drag factor (kg/m)
-   */
-  constructor(config = {}) {
-    this.initialFuelMass = config.initialFuelMass ?? 8.45;
-    this.targetAltitude = Math.max(20, Number(config.targetAltitude ?? 500));
-    this.dragCoefficient = config.dragCoefficient ?? 0.002;
-    this.timerId = null;
-    this.reset(this.targetAltitude);
+  // Chronological STS-31 Mission Milestones (MET seconds from T-00:00:00 Liftoff)
+  static MILESTONES = [
+    { time: -10.0, name: 'GLS AUTO SEQ', next: 'SSME IGNITION', altKm: 0.0, velKms: 0.0, downrangeKm: 0.0, thrustMN: 0.0, fuelPct: 100.0 },
+    { time: -6.6,  name: 'SSME IGNITION', next: 'LIFTOFF',       altKm: 0.0, velKms: 0.0, downrangeKm: 0.0, thrustMN: 5.25, fuelPct: 99.6 },
+    { time: 0.0,   name: 'LIFTOFF',       next: 'ROLL PROGRAM',  altKm: 0.0, velKms: 0.0, downrangeKm: 0.0, thrustMN: 30.16, fuelPct: 99.0 },
+    { time: 7.0,   name: 'ROLL PROGRAM',  next: 'MAX-Q',         altKm: 0.12, velKms: 0.04, downrangeKm: 0.05, thrustMN: 30.16, fuelPct: 96.5 },
+    { time: 52.0,  name: 'MAX-Q',         next: 'SRB SEP',       altKm: 11.0, velKms: 0.45, downrangeKm: 8.2, thrustMN: 21.50, fuelPct: 79.0 },
+    { time: 124.0, name: 'SRB SEP',       next: '3G THROTTLE',   altKm: 46.3, velKms: 1.50, downrangeKm: 62.0, thrustMN: 5.45, fuelPct: 54.0 },
+    { time: 455.0, name: '3G THROTTLE',   next: 'MECO',          altKm: 106.0, velKms: 6.25, downrangeKm: 920.0, thrustMN: 3.65, fuelPct: 11.0 },
+    { time: 512.0, name: 'MECO',          next: 'ET SEP',        altKm: 115.0, velKms: 7.82, downrangeKm: 1310.0, thrustMN: 0.0, fuelPct: 0.0 },
+    { time: 530.0, name: 'ET SEP',        next: 'OMS-2 BURN',    altKm: 119.0, velKms: 7.81, downrangeKm: 1450.0, thrustMN: 0.0, fuelPct: 0.0 },
+    { time: 2535.0, name: 'OMS-2 LEO',    next: 'HST DEPLOY',    altKm: 613.5, velKms: 7.59, downrangeKm: 14800.0, thrustMN: 0.05, fuelPct: 0.0 },
+    { time: 2600.0, name: 'HST DEPLOYED', next: 'IN LEO ORBIT',  altKm: 613.5, velKms: 7.59, downrangeKm: 15290.0, thrustMN: 0.0, fuelPct: 0.0 }
+  ];
+
+  constructor() {
+    this.reset();
   }
 
-  /**
-   * Resets all telemetry quantities to 0.00 and prepares for launch to `targetAltitude`.
-   * @param {number} [targetAltitude]
-   */
-  reset(targetAltitude) {
-    this.stop();
-    if (targetAltitude !== undefined) {
-      this.targetAltitude = Math.max(20, Number(targetAltitude) || 500);
-    }
-
-    this.time = 0.0;
-    this.fuelMass = this.initialFuelMass;
-    this.mass = RocketSimulationEngine.DRY_MASS + this.fuelMass;
-    this.thrust = 0.0;
-
-    this.velocity_x = 0.0;
-    this.velocity_y = 0.0;
-    this.position_x = 0.0;
-    this.position_y = 0.0;
-    this.acceleration_x = 0.0;
-    this.acceleration_y = 0.0;
-    this.g_force = 0.0;
-
-    this.phase = 'IDLE'; // IDLE | ASCENT | COAST | DESCENT | LANDING_BURN | LANDED
-    this.legsDeployed = false;
-    this.touchdownSpeed = 0.0;
-    this.maxAltitudeReached = 0.0;
-    this.hasLaunched = false;
-    this.landed = false;
+  reset() {
+    this.met = -10.0; // Starts automatically at T-00:00:10 countdown
+    this.srbSepElapsed = 0.0;
+    this.etSepElapsed = 0.0;
+    this.hubbleDeployElapsed = 0.0;
+    this.completed = false;
     return this.getTelemetryPayload();
   }
 
   /**
-   * Advances the simulation by `dt` seconds using Euler-Cromer integration
-   * and Falcon 9 closed-loop ascent cutoff + suicide-burn landing guidance.
-   * @param {number} [dt=0.016] - Frame time delta in seconds
-   * @returns {Object} Clean float telemetry payload
+   * Advances the STS-31 mission clock with adaptive stage time-scaling:
+   * - Real-time (1x) during T-10s countdown and initial liftoff/tower clear
+   * - Smooth warp across SRB ascent, SSME ascent, and coast to 613.5 km LEO
+   * @param {number} [dt=0.016] - Real frame delta in seconds
    */
   update(dt = 0.016) {
-    if (this.landed || dt <= 0) {
-      return this.getTelemetryPayload();
-    }
+    if (dt <= 0) return this.getTelemetryPayload();
 
-    if (this.phase === 'IDLE') {
-      this.phase = 'ASCENT';
-    }
-
-    this.time += dt;
-    const g = RocketSimulationEngine.GRAVITY;
-    const maxThrust = RocketSimulationEngine.INITIAL_THRUST;
-    let commandedThrust = 0.0;
-    let thrustAngleRad = Math.PI / 2; // Upright 90 deg
-
-    // Scale fuel burn rate to target altitude envelope so booster retains landing reserve
-    const altitudeBurnScale = 0.62 * Math.min(1.0, Math.sqrt(500 / Math.max(500, this.targetAltitude)));
-
-    if (this.phase === 'ASCENT') {
-      // Predict coast apogee given current upward velocity and average drag deceleration
-      const speedY = Math.max(0, this.velocity_y);
-      const avgDragDecel = (this.dragCoefficient * speedY * speedY) / (2 * this.mass);
-      const predictedApogee = this.position_y + (speedY * speedY) / (2 * (g + avgDragDecel));
-
-      if (predictedApogee >= this.targetAltitude || this.position_y >= this.targetAltitude) {
-        // MECO (Main Engine Cutoff) to hit user's target height limit
-        this.phase = 'COAST';
-        commandedThrust = 0.0;
-      } else {
-        commandedThrust = maxThrust;
-        thrustAngleRad = Math.PI / 2;
-      }
-    } else if (this.phase === 'COAST') {
-      commandedThrust = 0.0;
-      if (this.velocity_y <= 0) {
-        this.phase = 'DESCENT';
-      }
-    } else if (this.phase === 'DESCENT') {
-      commandedThrust = 0.0;
-      // Check suicide-burn / hoverslam ignition criterion against conservative 8.5 m/s² net decel
-      const vyDown = Math.max(0, -this.velocity_y);
-      const altRemaining = Math.max(0.25, this.position_y);
-      const reqStopAccel = (vyDown * vyDown) / (2 * altRemaining);
-
-      if (reqStopAccel >= 8.5 || (this.position_y <= 30 && vyDown > 1.5)) {
-        this.phase = 'LANDING_BURN';
-      }
-    }
-
-    if (this.phase === 'LANDING_BURN') {
-      const altRemaining = Math.max(0.05, this.position_y);
-      // Exact closed-loop kinematic hoverslam law: a_net = vy² / (2 * y)
-      const kinematicDecel = this.velocity_y < -0.35
-        ? ((this.velocity_y * this.velocity_y - 0.12) / (2 * altRemaining)) * 1.03
-        : 0;
-      const reqAccelY = this.velocity_y < -0.35 ? g + kinematicDecel : g * 0.9;
-
-      commandedThrust = Math.min(maxThrust, Math.max(0, this.mass * reqAccelY));
-      // Retro-thrust steers out any residual horizontal drift
-      const horizCorr = Math.max(-0.22, Math.min(0.22, -this.velocity_x * 0.08));
-      thrustAngleRad = Math.PI / 2 + horizCorr;
-
-      if (this.position_y <= Math.max(40, this.targetAltitude * 0.14)) {
-        this.legsDeployed = true;
-      }
-    }
-
-    // 1. Fuel consumption & mass update
-    if (this.fuelMass > 0 && commandedThrust > 0) {
-      const throttleRatio = commandedThrust / maxThrust;
-      const burnStep = RocketSimulationEngine.BURN_RATE * throttleRatio * altitudeBurnScale * dt;
-      this.fuelMass = Math.max(0, this.fuelMass - burnStep);
-      this.thrust = this.fuelMass > 0 ? commandedThrust : 0.0;
+    let timeScale = 1.0;
+    if (this.met < 8.0) {
+      timeScale = 1.0; // Real-time countdown & pad liftoff
+    } else if (this.met < 124.0) {
+      timeScale = 6.5; // Ascent through Max-Q to SRB separation (~18s visual)
+    } else if (this.met < 136.0) {
+      timeScale = 2.0; // Slow down briefly around SRB separation so user sees detachment clearly
+    } else if (this.met < 512.0) {
+      timeScale = 22.0; // SSME ascent to MECO (~17s visual)
+    } else if (this.met < 545.0) {
+      timeScale = 3.0; // Slow down around MECO & External Tank separation
+    } else if (this.met < 2535.0) {
+      timeScale = 135.0; // Coast up to 613.5 km LEO apogee (~15s visual)
+    } else if (this.met < 2600.0) {
+      timeScale = 8.0; // OMS-2 circularization & Hubble deployment in LEO
     } else {
-      this.thrust = 0.0;
+      timeScale = 1.0;
+      this.completed = true;
     }
 
-    this.mass = RocketSimulationEngine.DRY_MASS + this.fuelMass;
+    this.met += dt * timeScale;
 
-    // 2. Thrust vector components
-    const thrust_x = this.thrust * Math.cos(thrustAngleRad);
-    const thrust_y = this.thrust * Math.sin(thrustAngleRad);
-
-    // 3. Aerodynamic drag opposing velocity + grid-fin horizontal damping during descent
-    const speed = Math.hypot(this.velocity_x, this.velocity_y);
-    const gridFinDamping = (this.phase === 'DESCENT' || this.phase === 'LANDING_BURN') ? 0.35 * this.velocity_x : 0;
-    const drag_x = this.dragCoefficient * speed * this.velocity_x + gridFinDamping;
-    const drag_y = this.dragCoefficient * speed * this.velocity_y;
-
-    // 4. Net forces & accelerations
-    const netForce_x = thrust_x - drag_x;
-    const netForce_y = thrust_y - (this.mass * g) - drag_y;
-
-    this.acceleration_x = netForce_x / this.mass;
-    this.acceleration_y = netForce_y / this.mass;
-
-    const totalAccelMag = Math.hypot(this.acceleration_x, this.acceleration_y);
-    this.g_force = totalAccelMag / g;
-
-    // 5. Euler-Cromer integration: update velocities first, then spatial coordinates
-    this.velocity_x += this.acceleration_x * dt;
-    this.velocity_y += this.acceleration_y * dt;
-
-    this.position_x += this.velocity_x * dt;
-    this.position_y += this.velocity_y * dt;
-
-    if (this.position_y > 0) {
-      this.hasLaunched = true;
-      if (this.position_y > this.maxAltitudeReached) {
-        this.maxAltitudeReached = this.position_y;
-      }
+    if (this.met >= 124.0) {
+      this.srbSepElapsed += dt;
     }
-
-    // 6. Terminate loop execution when position_y drops to/below 0 after launching
-    if (this.hasLaunched && this.position_y <= 0) {
-      this.touchdownSpeed = Math.hypot(this.velocity_x, this.velocity_y);
-      this.position_y = 0.0;
-      this.velocity_x = 0.0;
-      this.velocity_y = 0.0;
-      this.acceleration_x = 0.0;
-      this.acceleration_y = 0.0;
-      this.g_force = 0.0;
-      this.thrust = 0.0;
-      this.legsDeployed = true;
-      this.landed = true;
-      this.phase = 'LANDED';
-      this.stop();
+    if (this.met >= 530.0) {
+      this.etSepElapsed += dt;
+    }
+    if (this.met >= 2535.0) {
+      this.hubbleDeployElapsed += dt;
     }
 
     return this.getTelemetryPayload();
   }
 
   /**
-   * Starts a high-frequency tick loop and invokes `onTick(payload)` every step.
-   */
-  start(onTick, dt = 0.016) {
-    this.stop();
-    this.timerId = setInterval(() => {
-      const payload = this.update(dt);
-      if (typeof onTick === 'function') onTick(payload);
-      if (this.landed) this.stop();
-    }, dt * 1000);
-  }
-
-  stop() {
-    if (this.timerId !== null) {
-      clearInterval(this.timerId);
-      this.timerId = null;
-    }
-  }
-
-  /**
-   * Returns a clean float JSON-serializable telemetry snapshot.
+   * Interpolates between STS-31 milestones and computes atmospheric pressure & temperature.
    */
   getTelemetryPayload() {
-    const clean = (val) => Number(val.toFixed(4));
-    const fuelPercent = this.initialFuelMass > 0
-      ? clean((this.fuelMass / this.initialFuelMass) * 100)
+    const milestones = RocketSimulationEngine.MILESTONES;
+    const t = this.met;
+
+    let m0 = milestones[0];
+    let m1 = milestones[milestones.length - 1];
+
+    for (let i = 0; i < milestones.length - 1; i++) {
+      if (t >= milestones[i].time && t <= milestones[i + 1].time) {
+        m0 = milestones[i];
+        m1 = milestones[i + 1];
+        break;
+      }
+    }
+
+    let alpha = 0;
+    if (t <= milestones[0].time) {
+      m0 = milestones[0];
+      m1 = milestones[1];
+      alpha = 0;
+    } else if (t >= milestones[milestones.length - 1].time) {
+      m0 = milestones[milestones.length - 1];
+      m1 = milestones[milestones.length - 1];
+      alpha = 1;
+    } else {
+      const span = Math.max(0.0001, m1.time - m0.time);
+      alpha = Math.min(1, Math.max(0, (t - m0.time) / span));
+    }
+
+    // Smooth ease-in-out during liftoff and orbital coast
+    const lerp = (a, b, u) => a + (b - a) * u;
+    const altitudeKm = t < 0 ? 0.0 : lerp(m0.altKm, m1.altKm, alpha);
+    const velocityKms = t < 0 ? 0.0 : lerp(m0.velKms, m1.velKms, alpha);
+    const downrangeKm = t < 0 ? 0.0 : lerp(m0.downrangeKm, m1.downrangeKm, alpha);
+    const fuelPct = lerp(m0.fuelPct, m1.fuelPct, alpha);
+
+    // Thrust in MN (drops to 0 at MECO, brief 0.05 MN OMS-2 burn at apogee)
+    let thrustMN = 0.0;
+    if (t >= -6.6 && t < 0) {
+      thrustMN = lerp(0.0, 5.25, (t + 6.6) / 6.6);
+    } else if (t >= 0 && t < 512.0) {
+      thrustMN = lerp(m0.thrustMN, m1.thrustMN, alpha);
+    } else if (t >= 2510.0 && t < 2555.0) {
+      thrustMN = 0.053; // OMS-2 orbital insertion burn
+    }
+
+    // Atmospheric pressure (kPa): sea-level 101.3 kPa decaying exponentially + dynamic pressure q at Max-Q
+    const staticPressureKpa = altitudeKm < 100
+      ? 101.325 * Math.exp(-altitudeKm / 7.4)
       : 0.0;
+    const rho = 1.225 * Math.exp(-altitudeKm / 7.4);
+    const vMs = velocityKms * 1000;
+    const dynamicPressureKpa = (0.5 * rho * vMs * vMs) / 1000;
+    const totalPressureKpa = t < 0 ? 101.3 : Math.min(135.0, staticPressureKpa + dynamicPressureKpa * 0.25);
+
+    // Standard Atmosphere temperature profile (°C) across Troposphere, Stratosphere, Mesosphere, LEO
+    let tempC = 24.0;
+    if (altitudeKm <= 12) {
+      tempC = 24.0 - altitudeKm * 6.5; // Troposphere cooling to -54°C
+    } else if (altitudeKm <= 48) {
+      tempC = -54.0 + ((altitudeKm - 12) / 36) * 49.0; // Stratosphere warming to -5°C
+    } else if (altitudeKm <= 85) {
+      tempC = -5.0 - ((altitudeKm - 48) / 37) * 85.0; // Mesosphere cooling to -90°C
+    } else {
+      tempC = -90.0 - Math.min(20.0, ((altitudeKm - 85) / 500) * 20.0); // Upper atmosphere / LEO shade
+    }
+
+    const nextStageTime = m1.time;
+    const timeToNext = Math.max(0, nextStageTime - t);
 
     return {
-      time: clean(this.time),
-      mass: clean(this.mass),
-      fuel_mass: clean(this.fuelMass),
-      fuel_percent: fuelPercent,
-      thrust: clean(this.thrust),
-      velocity_x: clean(this.velocity_x),
-      velocity_y: clean(this.velocity_y),
-      velocity: clean(Math.hypot(this.velocity_x, this.velocity_y)),
-      position_x: clean(this.position_x),
-      position_y: clean(this.position_y),
-      acceleration_x: clean(this.acceleration_x),
-      acceleration_y: clean(this.acceleration_y),
-      acceleration: clean(Math.hypot(this.acceleration_x, this.acceleration_y)),
-      g_force: clean(this.g_force),
-      target_altitude: clean(this.targetAltitude),
-      max_altitude: clean(this.maxAltitudeReached),
-      phase: this.phase,
-      legs_deployed: this.legsDeployed,
-      touchdown_speed: clean(this.touchdownSpeed),
-      landed: this.landed
+      time: Number(t.toFixed(2)),
+      clock_formatted: RocketSimulationEngine.formatClock(t),
+      start_label: t < 0 ? 'T-00:10' : '12:33:51',
+      next_stage_label: m0.next,
+      duration_label: t >= 2600 ? '613.5 KM' : RocketSimulationEngine.formatShortDuration(timeToNext),
+      phase: m0.name,
+      thrust_mn: Number(thrustMN.toFixed(2)),
+      thrust_display: thrustMN >= 1.0
+        ? `${thrustMN.toFixed(1)}M`
+        : thrustMN > 0
+          ? `${(thrustMN * 1000).toFixed(0)}k`
+          : '0.0',
+      velocity_kms: Number(velocityKms.toFixed(2)),
+      pressure_kpa: Number(totalPressureKpa.toFixed(1)),
+      altitude_km: Number(altitudeKm.toFixed(1)),
+      downrange_km: Number(downrangeKm.toFixed(1)),
+      temperature_c: Math.round(tempC),
+      fuel_percent: Math.max(0, Math.round(fuelPct)),
+      ssme_active: (t >= -6.6 && t < 512.0) || (t >= 2510.0 && t < 2555.0),
+      srb_active: t >= 0.0 && t < 124.0,
+      srb_separated: t >= 124.0,
+      srb_sep_progress: Math.min(1, this.srbSepElapsed / 6.0),
+      et_separated: t >= 530.0,
+      et_sep_progress: Math.min(1, this.etSepElapsed / 7.0),
+      hubble_deployed: t >= 2535.0,
+      hubble_deploy_progress: Math.min(1, this.hubbleDeployElapsed / 6.0),
+      completed: this.completed
     };
+  }
+
+  static formatClock(metSeconds) {
+    const abs = Math.abs(Math.floor(metSeconds));
+    const hrs = String(Math.floor(abs / 3600)).padStart(2, '0');
+    const mins = String(Math.floor((abs % 3600) / 60)).padStart(2, '0');
+    const secs = String(abs % 60).padStart(2, '0');
+    const prefix = metSeconds < 0 ? 'T- ' : '';
+    return `${prefix}${hrs} : ${mins} : ${secs}`;
+  }
+
+  static formatShortDuration(seconds) {
+    const s = Math.ceil(seconds);
+    const mins = String(Math.floor(s / 60)).padStart(2, '0');
+    const secs = String(s % 60).padStart(2, '0');
+    return `${mins}:${secs}`;
   }
 }
 
@@ -257,25 +211,37 @@ if (typeof module !== 'undefined' && module.exports) {
 // Self-check when executed directly via Node
 if (typeof require !== 'undefined' && require.main === module) {
   const assert = require('assert');
-  const engine = new RocketSimulationEngine({ targetAltitude: 500 });
-  const init = engine.getTelemetryPayload();
-  assert(init.position_y === 0 && init.velocity === 0 && init.g_force === 0, 'Initial state must be 0');
-  assert(init.fuel_percent === 100, 'Initial fuel must be 100%');
+  const engine = new RocketSimulationEngine();
+  const initial = engine.getTelemetryPayload();
+  assert(initial.time === -10, 'Simulation must start automatically at T-00:00:10 countdown');
+  assert(initial.altitude_km === 0, 'Initial altitude must be 0 km');
+  assert(initial.fuel_percent === 100, 'Initial fuel must be 100%');
 
+  let sawSRBSep = false;
+  let sawMECO = false;
+  let sawETSep = false;
   let guard = 0;
-  while (!engine.landed && guard++ < 100000) {
-    engine.update(0.016);
+
+  while (!engine.completed && guard++ < 20000) {
+    const state = engine.update(0.016);
+    if (state.srb_separated) sawSRBSep = true;
+    if (state.time >= 512 && state.fuel_percent === 0) sawMECO = true;
+    if (state.et_separated) sawETSep = true;
   }
+
   const finalState = engine.getTelemetryPayload();
-  assert(finalState.landed === true, 'Rocket must complete landing');
-  assert(Math.abs(finalState.max_altitude - 500) < 15, `Apogee (${finalState.max_altitude}m) must match 500m target`);
-  assert(finalState.touchdown_speed < 2.0, `Touchdown speed (${finalState.touchdown_speed} m/s) must be soft Falcon 9 landing`);
+  assert(sawSRBSep, 'SRBs must separate at T+00:02:04 (46.3 km)');
+  assert(sawMECO, 'MECO must occur at T+00:08:32 (115 km) with 0% ET fuel');
+  assert(sawETSep, 'External Tank must separate at T+00:08:50 (119 km)');
+  assert(finalState.altitude_km === 613.5, `Final LEO altitude (${finalState.altitude_km} km) must be 613.5 km`);
+  assert(finalState.velocity_kms === 7.59, `Final LEO orbital velocity (${finalState.velocity_kms} km/s) must be 7.59 km/s`);
+  assert(finalState.hubble_deployed === true, 'Hubble Space Telescope must deploy in LEO');
   console.log(
-    'Falcon 9 Self-Landing Check Passed | Target: 500m | Apogee:',
-    finalState.max_altitude.toFixed(2),
-    'm | Touchdown Speed:',
-    finalState.touchdown_speed.toFixed(2),
-    'm/s | Fuel Remaining:',
-    finalState.fuel_percent.toFixed(1) + '%'
+    'STS-31 Hubble Launch-to-LEO Self-Check Passed | Final Orbit:',
+    finalState.altitude_km,
+    'km | Velocity:',
+    finalState.velocity_kms,
+    'km/s | Phase:',
+    finalState.phase
   );
 }
