@@ -42,7 +42,11 @@
     leftSRB: 'Resorces/Group 55.png',
     rightSRB: 'Resorces/Group 72.png',
     externalTank: 'Resorces/Group 71.png',
-    orbiter: 'Resorces/Group 59.png'
+    orbiter: 'Resorces/Group 59.png',
+    hubbleComplete: 'Resorces/complete_hubble_tel.png',
+    hubbleBody: 'Resorces/Group 64.png',
+    hubbleWing: 'Resorces/Group 61.png',
+    hubbleAntenna: 'Resorces/Group 63.png'
   };
 
   const images = {};
@@ -182,7 +186,7 @@
   }
 
   /**
-   * Renders the deployed Hubble Space Telescope (HST) in 613.5 km Low Earth Orbit
+   * Renders the deployed Hubble Space Telescope (Resorces/complete_hubble_tel.png) in 613.5 km LEO
    */
   function drawHubbleTelescope(cx, cy, scale, deployProgress) {
     if (deployProgress <= 0) return;
@@ -192,7 +196,15 @@
     ctx.scale(scale, scale);
     ctx.globalAlpha = Math.min(1, deployProgress * 1.4);
 
-    // Solar Array Wings (extend outward as deployProgress -> 1)
+    if (ready(images.hubbleComplete)) {
+      const hubbleW = 190 * (0.65 + 0.35 * deployProgress);
+      const hubbleH = 215 * (0.65 + 0.35 * deployProgress);
+      ctx.drawImage(images.hubbleComplete, -hubbleW * 0.5, -hubbleH * 0.5, hubbleW, hubbleH);
+      ctx.restore();
+      return;
+    }
+
+    // Fallback vector if image is still loading
     const wingSpan = 28 + deployProgress * 64;
     ctx.strokeStyle = '#d4af37';
     ctx.lineWidth = 2.5;
@@ -200,34 +212,6 @@
     ctx.moveTo(-wingSpan, 0);
     ctx.lineTo(wingSpan, 0);
     ctx.stroke();
-
-    // Left & Right Solar Panels
-    ctx.fillStyle = '#023E8A';
-    ctx.strokeStyle = '#ffd166';
-    ctx.lineWidth = 1.5;
-    ctx.fillRect(-wingSpan - 18, -32, 22, 64);
-    ctx.strokeRect(-wingSpan - 18, -32, 22, 64);
-    ctx.fillRect(wingSpan - 4, -32, 22, 64);
-    ctx.strokeRect(wingSpan - 4, -32, 22, 64);
-
-    // Hubble Silver Aft Shroud & Forward Optical Telescope Assembly Cylinder
-    const bodyGrad = ctx.createLinearGradient(-16, 0, 16, 0);
-    bodyGrad.addColorStop(0, '#9aa5b1');
-    bodyGrad.addColorStop(0.5, '#f5f7fa');
-    bodyGrad.addColorStop(1, '#7b8794');
-    ctx.fillStyle = bodyGrad;
-    ctx.fillRect(-16, -24, 32, 48);
-    ctx.fillRect(-12, -52, 24, 28);
-
-    // Open Aperture Door
-    ctx.fillStyle = '#e4e7eb';
-    ctx.beginPath();
-    ctx.moveTo(-12, -52);
-    ctx.lineTo(-22, -68);
-    ctx.lineTo(-8, -68);
-    ctx.closePath();
-    ctx.fill();
-
     ctx.restore();
   }
 
