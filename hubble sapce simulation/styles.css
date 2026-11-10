@@ -8,6 +8,8 @@
   --sky-3: #023e8a;
   --sky-4: #03045e;
   --camera-zoom: 1;
+  --ground-offset-y: 0px;
+  --ground-opacity: 1;
   --fuel-dashoffset: 0;
   --ground-brown: #421704;
   --launchpad-dark: #1b1e21;
@@ -277,14 +279,16 @@ body {
 .launchpad {
   position: absolute;
   left: 50%;
-  bottom: calc(8.9% * var(--camera-zoom));
-  transform: translateX(-50%) scale(var(--camera-zoom));
+  bottom: 8.9%;
+  transform: translate(-50%, var(--ground-offset-y)) scale(var(--camera-zoom));
   transform-origin: bottom center;
+  opacity: var(--ground-opacity);
   width: min(55vw, 790px);
   height: 20px;
   background-color: var(--launchpad-dark);
   clip-path: polygon(5% 0%, 95% 0%, 100% 100%, 0% 100%);
   z-index: 3;
+  pointer-events: none;
 }
 
 .ground-container {
@@ -292,7 +296,9 @@ body {
   left: 0;
   right: 0;
   bottom: 0;
-  height: calc(9.2% * var(--camera-zoom));
+  height: 9.2%;
+  transform: translateY(var(--ground-offset-y));
+  opacity: var(--ground-opacity);
   background-color: var(--ground-brown);
   clip-path: polygon(0% 12%, 22% 3%, 78% 12%, 100% 4%, 100% 100%, 0% 100%);
   display: flex;
@@ -300,6 +306,7 @@ body {
   justify-content: center;
   padding-bottom: 10px;
   z-index: 4;
+  pointer-events: none;
 }
 
 .ground-pill {
